@@ -346,9 +346,9 @@ public class OwnerDbManager {
         mtu = Const.SERVICE_INFO_MTU_MIN_SIZE;
       } else if (mtu > Const.OWNER_THRESHOLD_DEFAULT_MTU_SIZE) {
         System.out.println("MTU size greater than maximum allowed. "
-            + "Updating MTU size to maximum limit of "
-            + Const.OWNER_THRESHOLD_DEFAULT_MTU_SIZE);
-        mtu = Const.SERVICE_INFO_MTU_MIN_SIZE;
+            +  "Updating MTU size to maximum limit of "
+            +  Const.OWNER_THRESHOLD_DEFAULT_MTU_SIZE);
+        mtu = Const.OWNER_THRESHOLD_DEFAULT_MTU_SIZE;
       }
     }
 
