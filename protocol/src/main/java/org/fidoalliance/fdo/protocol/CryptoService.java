@@ -67,6 +67,11 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import javax.security.auth.DestroyFailedException;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1InputStream;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.ASN1OutputStream;
+import org.bouncycastle.asn1.DLSequence;
 import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.InvalidCipherTextException;
 import org.bouncycastle.crypto.engines.AESEngine;
@@ -696,10 +701,11 @@ public final class CryptoService {
       return false;
     }
 
+    final byte[] protectedHeader;
     final Composite header1;
     final Object rawHeader = cose.get(Const.COSE_SIGN1_PROTECTED);
     if (rawHeader instanceof byte[]) {
-      final byte[] protectedHeader = cose.getAsBytes(Const.COSE_SIGN1_PROTECTED);
+      protectedHeader = cose.getAsBytes(Const.COSE_SIGN1_PROTECTED);
       header1 = Composite.fromObject(protectedHeader);
     } else {
       throw new UnsupportedOperationException("Illegal protected header encoding");
@@ -738,11 +744,41 @@ public final class CryptoService {
       final String algName = getSignatureAlgorithm(algId);
       final Signature signer = getSignatureInstance(algName);
 
-      signer.initVerify(verificationKey);
-      signer.update(payload);
-      return signer.verify(sig);
+      // Signature must be computed over a sig_structure:
+      // Sig_structure = [
+      //   context : "Signature" / "Signature1" / "CounterSignature",
+      //   body_protected : empty_or_serialized_map,
+      //   external_aad : bstr,
+      //   payload : bstr
+      // ]
+      //
+      // See the COSE RFC 8152 for details on this.
 
-    } catch (NoSuchAlgorithmException | SignatureException | InvalidKeyException e) {
+      Composite sigStruct = Composite.newArray()
+          .set(Const.FIRST_KEY, "Signature1")
+          .set(Const.SECOND_KEY, protectedHeader)
+          .set(Const.THIRD_KEY, new byte[0])
+          .set(Const.FOURTH_KEY, payload);
+
+      byte [] derSig = sig;
+      if (verificationKey instanceof ECKey) {
+        // The encoded signature is fixed-width r|s concatenated, we must convert it to DER.
+        int size = sig.length / 2;
+        ASN1Integer r = new ASN1Integer(new BigInteger(1, sig, 0, size));
+        ASN1Integer s = new ASN1Integer(new BigInteger(1, sig, size, size));
+        DLSequence sequence = new DLSequence(new ASN1Encodable[]{r, s});
+        ByteArrayOutputStream sigBytes = new ByteArrayOutputStream();
+        ASN1OutputStream asn1out = ASN1OutputStream.create(sigBytes);
+        asn1out.writeObject(sequence);
+        byte [] b = sigBytes.toByteArray();
+        derSig = Arrays.copyOf(b, b.length);
+      }
+
+      signer.initVerify(verificationKey);
+      signer.update(sigStruct.toBytes());
+      return signer.verify(derSig);
+
+    } catch (NoSuchAlgorithmException | SignatureException | InvalidKeyException | IOException e) {
       throw new CryptoServiceException(e);
     }
   }
@@ -910,14 +946,79 @@ public final class CryptoService {
 
       final Signature signer = getSignatureInstance(algName);
       signer.initSign(signingKey);
-      signer.update(payload);
-      final byte[] sig = signer.sign();
-      cos.set(Const.COSE_SIGN1_SIGNATURE, sig);
 
+      // Signature must be computed over a sig_structure:
+      // Sig_structure = [
+      //   context : "Signature" / "Signature1" / "CounterSignature",
+      //   body_protected : empty_or_serialized_map,
+      //   external_aad : bstr,
+      //   payload : bstr
+      // ]
+      //
+      // See the COSE RFC 8152 for details on this.
+
+      Composite sigStruct = Composite.newArray()
+          .set(Const.FIRST_KEY, "Signature1")
+          .set(Const.SECOND_KEY, protectedHeader)
+          .set(Const.THIRD_KEY, new byte[0])
+          .set(Const.FOURTH_KEY, payload);
+
+      signer.update(sigStruct.toBytes());
+      final byte[] sig = signer.sign();
+
+      byte[] formattedSig = sig;
+      if (algName.endsWith("withECDSA")) {
+
+        // COSE ECDSA signatures are not DER, but are instead R|S, with R and S padded to
+        // key length and concatenated.  We must convert.
+        BigInteger r;
+        BigInteger s;
+        try (ByteArrayInputStream bin = new ByteArrayInputStream(sig);
+            ASN1InputStream in = new ASN1InputStream(bin)) {
+
+          DLSequence sequence = (DLSequence) in.readObject();
+          r = ((ASN1Integer) sequence.getObjectAt(0)).getPositiveValue();
+          s = ((ASN1Integer) sequence.getObjectAt(1)).getPositiveValue();
+        }
+
+        // PKCS11 keys cannot be directly interrogated, guess key size from associated algorithm IDs
+        final int size;
+        switch (coseSignatureAlg) {
+          case Const.COSE_ES256:
+            size = 32;
+            break;
+          case Const.COSE_ES384:
+            size = 48;
+            break;
+          default:
+            throw new InvalidParameterException("coseSignatureAlg " + coseSignatureAlg);
+        }
+        formattedSig = new byte[2 * size];
+        writeBigInteger(r, formattedSig, 0, size);
+        writeBigInteger(s, formattedSig, size, size);
+      }
+
+      cos.set(Const.COSE_SIGN1_SIGNATURE, formattedSig);
       return cos;
 
     } catch (Exception e) {
       throw new CryptoServiceException(e);
+    }
+  }
+
+  /**
+   * Write a BigInteger into a fixed-length buffer.
+   */
+  static void writeBigInteger(BigInteger src, byte[] dest, int destPos, int length) {
+    byte[] intbuf = src.toByteArray(); // min #bits, with one sign bit guaranteed!
+    int byteLen = src.bitLength() / Byte.SIZE + 1;
+
+    if (byteLen >= length) { // the bigint fits exactly, or must be truncated.
+      System.arraycopy(intbuf, byteLen - length, dest, destPos, length);
+    } else { // the bigint must be padded to fill the field
+      int pad = length - byteLen;
+      Arrays.fill(dest, destPos,  pad + destPos, (byte)0);
+      System.arraycopy(intbuf, byteLen, dest, pad + destPos, byteLen);
     }
   }
 
