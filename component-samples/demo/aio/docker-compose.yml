@@ -19,7 +19,8 @@ services:
         - _JAVA_OPTIONS
     restart: on-failure:5
     env_file:
-      - ./aio.env
+      - aio.env
+      - creds.env
     mem_limit: 500m
     mem_reservation: 200m
     cpu_shares: 1024

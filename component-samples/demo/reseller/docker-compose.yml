@@ -19,7 +19,8 @@ services:
         - _JAVA_OPTIONS
     restart: on-failure:5
     env_file:
-      - ./reseller.env
+      - reseller.env
+      - creds.env
     volumes:
       - ./target:/home/reseller/target
     mem_limit: 500m

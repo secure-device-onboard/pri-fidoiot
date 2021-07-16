@@ -19,7 +19,8 @@ services:
         - _JAVA_OPTIONS
     restart: on-failure:5
     env_file:
-      - ./owner.env
+      - owner.env
+      - creds.env
     volumes:
       - ./target:/home/owner/target
     mem_limit: 500m

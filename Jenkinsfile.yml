@@ -11,7 +11,7 @@ node('ubuntu18.04-OnDemand'){
   stage('build'){
     sh 'mvn clean install'
     print "Archive the artifacts"
-    sh 'cd component-samples && tar -czvf demo.tar.gz demo && mv demo.tar.gz ..'
+    sh 'cd component-samples && cp -r scripts demo && tar -czvf demo.tar.gz demo && mv demo.tar.gz ..'
     archiveArtifacts artifacts: 'demo.tar.gz', fingerprint: true, allowEmptyArchive: false
   }
 
@@ -33,6 +33,9 @@ node('ubuntu18.04-OnDemand'){
       // Extract and copy the demo.tar content to the location
       sh '''
         cp -r component-samples/demo/* test-fidoiot/binaries/pri-fidoiot
+        cd test-fidoiot/binaries/pri-fidoiot
+        bash scripts/keys_gen.sh .
+        cp -r creds/* .
       '''
 
       // Updating the TO0 scheduling time interval

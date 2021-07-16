@@ -20,6 +20,7 @@ services:
     restart: on-failure:5
     env_file:
       - manufacturer.env
+      - creds.env
     volumes:
       - ./target:/home/manufacturer/target
     mem_limit: 500m
